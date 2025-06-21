@@ -165,7 +165,27 @@ def unified_state_loop(server_socket):
             server_socket.tap(*RIFT_POINTS["恭喜获得关闭坐标"])
             time.sleep(1.5)
             continue
+        
+        # 继续战斗（判定通关成功）
+        if match_template(screen, "icons/SJLX-ZDSL-JXZD.png", RIFT_POINTS["继续战斗识别区域"]):
+            rift_log("✅ 识别到 '继续战斗' 按钮，判定为通关成功")
 
+            # 层数 +1
+            if last_level_text:
+                import re
+                match = re.search(r"第\s*(\d+)\s*层", last_level_text)
+                if match:
+                    current_level = int(match.group(1)) + 1
+                    last_level_text = f"第{current_level}层"
+                    failure_count = 0
+                    rift_log(f"📈 判定已通关，更新层数为：{last_level_text}")
+                    if gs.rift_level_callback:
+                        gs.rift_level_callback(last_level_text, failure_count)
+
+            server_socket.tap(*RIFT_POINTS["继续战斗按钮"])
+            time.sleep(1.5)
+            continue
+        
         # 失败
         if match_template(screen, "icons/SGLX-ZDSB.png", RIFT_POINTS["失败识别区域"]):
             handle_failed_battle(server_socket)
@@ -177,7 +197,7 @@ def unified_state_loop(server_socket):
                     time.sleep(1.2)
                 current_phase = "state_returning_home"
             continue
-
+        
         # 开始挑战
         if match_template(screen, "icons/SGLX-KSTZ.png", RIFT_POINTS["开始挑战识别区域"]):
             rift_log("🎯 识别到开始挑战按钮")
@@ -209,25 +229,7 @@ def unified_state_loop(server_socket):
             server_socket.tap(*RIFT_POINTS["跳过按钮"])
             time.sleep(1.2)
             continue
-        # 继续战斗（判定通关成功）
-        if match_template(screen, "icons/SJLX-ZDSL-JXZD.png", RIFT_POINTS["继续战斗识别区域"]):
-            rift_log("✅ 识别到 '继续战斗' 按钮，判定为通关成功")
-
-            # 层数 +1
-            if last_level_text:
-                import re
-                match = re.search(r"第\s*(\d+)\s*层", last_level_text)
-                if match:
-                    current_level = int(match.group(1)) + 1
-                    last_level_text = f"第{current_level}层"
-                    failure_count = 0
-                    rift_log(f"📈 判定已通关，更新层数为：{last_level_text}")
-                    if gs.rift_level_callback:
-                        gs.rift_level_callback(last_level_text, failure_count)
-
-            server_socket.tap(*RIFT_POINTS["继续战斗按钮"])
-            time.sleep(1.5)
-            continue
+        
 
 # 失败处理
 def handle_failed_battle(server_socket):
