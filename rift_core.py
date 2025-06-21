@@ -123,7 +123,7 @@ def resume_rift(touch_socket):
 
 # 统一状态循环
 def unified_state_loop(server_socket):
-    global rift_running, failure_count, current_phase, rift_paused
+    global rift_running, failure_count, current_phase, rift_paused, last_level_text
     gs.rift_state = "opening"
     failure_count = 0
 
