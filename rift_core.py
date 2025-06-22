@@ -59,8 +59,9 @@ def is_main_page(screen):
     return cv2.minMaxLoc(res)[1] >= 0.95
 
 # 启动裂隙模块
-def start_rift_module(dummy_frame_listener, touch_socket, force=False):
-    global rift_running, failure_count, current_phase, _frame_listener   # ✅ 这一行放开头就 OK，下面就别再 global 了！
+def start_rift_module(dummy_frame_listener, touch_socket, retry_limit=30, force=False):
+    global rift_running, failure_count, current_phase, _frame_listener, failure_retry_limit
+    failure_retry_limit = retry_limit  # ✅ 主控传入的失败上限值（由输入框决定）
 
     if rift_running and not force:
         print("⚠️ 裂隙模块已在运行")
@@ -185,7 +186,7 @@ def unified_state_loop(server_socket):
             server_socket.tap(*RIFT_POINTS["继续战斗按钮"])
             time.sleep(1.5)
             continue
-        
+
         # 失败
         if match_template(screen, "icons/SGLX-ZDSB.png", RIFT_POINTS["失败识别区域"]):
             handle_failed_battle(server_socket)

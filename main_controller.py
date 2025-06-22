@@ -1,5 +1,4 @@
 # ✅ TouchAgent Python 端主控逻辑优化版（最终整理版）
-import tkinter as tk
 import tech_timer_manager
 import subprocess
 import os
@@ -10,7 +9,10 @@ import rift_core
 import collect_core
 import expedition_core
 import tech_research_core
-from tkinter import ttk
+import queue
+from PyQt5.QtWidgets import (QApplication, QMainWindow, QWidget, QLabel, QPushButton,QVBoxLayout, QHBoxLayout, QGridLayout, QCheckBox, QTextEdit,QGroupBox, QLineEdit, QFrame)
+from PyQt5.QtCore import Qt, QTimer, pyqtSignal, QObject, QThread, QMetaObject, Qt
+from PyQt5.QtGui import QIntValidator
 from expedition_core import set_expedition_flags, set_expedition_enabled
 from utils.adb_tools import TouchServerSocket, ScreenshotSocket, get_rift_stream_listener, ControlSocket,enable_rift_listener
 from position_config import COLLECT_POINTS
@@ -30,22 +32,20 @@ def pause_all_tasks():
     gs.current_task_flag = None
 
 def resume_all_tasks():
-    #print(f"[DEBUG] resume_all_tasks 当前 gs.current_collect_enabled: {gs.current_collect_enabled}")
-    #print(f"[DEBUG] resume_all_tasks 当前 resource_vars 状态: {[f'{label}={var.get()}' for label, var in resource_vars.items()]}")
     if gs.current_task_flag is None:
         gs.research_pause_event.clear()
-        if gs.current_collect_enabled:
+        if window.checkbox_collect.isChecked():
             gs.current_collect_points = (
-                ["食物"] if global_resource_mode.get()
-                else [label for label, var in resource_vars.items() if var.get()]
+                ["食物"] if window.checkbox_food_only.isChecked()
+                else list(COLLECT_POINTS.keys())
             )
             gs.current_task_flag = "collect"
-            safe_after(0, lambda: current_task_status_var.set("采集中 🏃‍♂️"))
+            safe_after(0, lambda: window.update_task_status("采集中 🏃‍♂️"))
             collect_core.start_collect(server_socket, gs.current_collect_points.copy())
             print(f"▶️ 已恢复采集任务（资源: {', '.join(gs.current_collect_points)}）")
         else:
             gs.current_task_flag = None
-            safe_after(0, lambda: current_task_status_var.set("空闲"))
+            safe_after(0, lambda: window.update_task_status("空闲"))
             print("▶️ 无采集勾选，恢复为空闲")
 
 # ADB转发
@@ -89,20 +89,259 @@ def send_control_command(cmd_str):
 collect_core.register_main_callbacks(pause_event, pause_all_tasks)  # 注册采集模块回调
 gs.rift_send_control_command_callback = send_control_command # 注册发送控制命令回调              
 
-# Tkinter 界面
-root = tk.Tk()
-root.title("自动游戏助手 | 主控面板")
-root.geometry("500x700")
-root.resizable(False, False)
-connection_status_var = tk.StringVar(value="⏳ 正在连接 TouchServer...")
-listen_mode_var = tk.StringVar(value="监听模式：未知")
-rift_level_var = tk.StringVar(value="裂隙层数：无")
+class MainWindow(QMainWindow):
+    connection_status_signal = pyqtSignal(str, str)
+    listen_mode_signal = pyqtSignal(str, str)
+    task_status_signal = pyqtSignal(str, str)
+    log_signal = pyqtSignal(str)
+    def __init__(self):
+        super().__init__()
+
+        self.setWindowTitle("自动游戏助手 | 主控面板")
+        self._ui_queue = queue.Queue()
+        def _process_ui_queue():
+            try:
+                while not self._ui_queue.empty():
+                    func = self._ui_queue.get_nowait()
+                    func()
+            except Exception:
+                pass
+            finally:
+                QTimer.singleShot(50, _process_ui_queue)
+        QTimer.singleShot(50, _process_ui_queue)
+        
+        self.setGeometry(100, 100, 430, 700)
+        self.setFixedSize(430, 700)
+
+        self.central_widget = QWidget()
+        self.setCentralWidget(self.central_widget)
+
+        self.main_layout = QVBoxLayout()
+        self.central_widget.setLayout(self.main_layout)
+
+        # 功能启用设置
+        function_group = QGroupBox("功能启用设置")
+        function_layout = QGridLayout()
+        function_group.setLayout(function_layout)
+
+        self.checkbox_collect = QCheckBox("启用采集模块")
+        self.checkbox_expedition = QCheckBox("启用远征模块")
+        self.checkbox_mine_reward = QCheckBox("启用领地矿区一键领取（需配合远征）")
+        self.checkbox_scout = QCheckBox("启用侦察功能（需配合远征）")
+        self.checkbox_rift = QCheckBox("启用时空裂隙自动挑战")
+
+        function_layout.addWidget(self.checkbox_collect, 0, 0)
+        function_layout.addWidget(self.checkbox_expedition, 0, 1)
+        function_layout.addWidget(self.checkbox_mine_reward, 1, 0)
+        function_layout.addWidget(self.checkbox_scout, 1, 1)
+        function_layout.addWidget(self.checkbox_rift, 2, 0)
+
+        self.main_layout.addWidget(function_group)
+
+        # 手动控制功能
+        manual_group = QGroupBox("手动控制功能")
+        manual_layout = QHBoxLayout()
+        manual_group.setLayout(manual_layout)
+
+        self.btn_manual_research = QPushButton("🔬 手动科技研究")
+        self.btn_manual_expedition = QPushButton("📦 手动远征任务")
+        self.btn_manual_rift = QPushButton("⚔️ 手动裂隙挑战")
+        self.btn_continue_rift = QPushButton("▶️ 继续挑战")
+
+        for btn in [self.btn_manual_research, self.btn_manual_expedition, self.btn_manual_rift, self.btn_continue_rift]:
+            manual_layout.addWidget(btn)
+
+        self.main_layout.addWidget(manual_group)
+
+        # 采集资源选择
+        resource_group = QGroupBox("采集资源选择")
+        resource_layout = QVBoxLayout()
+        resource_group.setLayout(resource_layout)
+
+        row1 = QHBoxLayout()
+        self.checkbox_wood = QCheckBox("木材")
+        self.checkbox_food = QCheckBox("食物")
+        self.checkbox_stone = QCheckBox("石头")
+        self.checkbox_copper = QCheckBox("铜矿")
+        self.checkbox_iron = QCheckBox("铁矿")
+        for cb in [self.checkbox_wood, self.checkbox_food, self.checkbox_stone, self.checkbox_copper, self.checkbox_iron]:
+            row1.addWidget(cb)
+
+        resource_layout.addLayout(row1)
+        resource_layout.addSpacing(5)
+        self.main_layout.addWidget(resource_group)
+
+        # 科技 + 裂隙状态
+        status_frame = QFrame()
+        status_layout = QHBoxLayout()
+        status_frame.setLayout(status_layout)
+
+        # 研究状态（左）
+        left_box = QGroupBox("研究状态")
+        left_layout = QVBoxLayout()
+        self.research_status_label = QLabel("研究剩余：无")
+        self.accel_status_label = QLabel("加速CD：无")
+        left_layout.addWidget(self.research_status_label)
+        left_layout.addWidget(self.accel_status_label)
+        left_box.setLayout(left_layout)
+
+        # 裂隙状态（右）
+        right_box = QGroupBox("裂隙状态")
+        right_layout = QVBoxLayout()
+
+        self.rift_level_label = QLabel("裂隙层数：无 / 0")
+
+        retry_row = QHBoxLayout()
+        retry_label = QLabel("失败重试次数：")
+        retry_label.setFixedWidth(90)  # ✅ 控制标签宽度，统一与左侧保持视觉对齐
+
+        self.rift_retry_input = QLineEdit()
+        self.rift_retry_input.setFixedWidth(40)
+        self.rift_retry_input.setMaximumWidth(40)
+        self.rift_retry_input.setAlignment(Qt.AlignCenter)  # 让数字居中看起来更舒服
+        self.rift_retry_input.setText("30")  # 默认值设为30
+        self.rift_retry_input.setValidator(QIntValidator(1, 99, self))
+
+        retry_row = QHBoxLayout()
+        retry_label = QLabel("失败重试次数：")
+        retry_label.setFixedWidth(85)  # 稍微紧凑一点
+        retry_row.setSpacing(5)        # 控制组件之间间距
+        retry_row.addWidget(retry_label)
+        retry_row.addWidget(self.rift_retry_input)
+        retry_row.addStretch()
+
+        right_layout.addWidget(self.rift_level_label)
+        right_layout.addLayout(retry_row)
+        right_box.setLayout(right_layout)
+
+        # 合并到主布局中
+        status_layout.addWidget(left_box, 1)
+        status_layout.addWidget(right_box, 1)
+        self.main_layout.addWidget(status_frame)
+
+        # 软件状态
+        status_group2 = QGroupBox("软件状态")
+        status_layout2 = QHBoxLayout()
+        status_group2.setLayout(status_layout2)
+
+        self.connection_status_label = QLabel("未连接")
+        self.listen_mode_label = QLabel("--")
+        self.task_status_label = QLabel("--")
+
+        status_layout2.addWidget(QLabel("TouchServer:"))
+        status_layout2.addWidget(self.connection_status_label)
+        self.connection_status_label.setStyleSheet("color: green; font-weight: bold;")
+        status_layout2.addWidget(QLabel("监听模式:"))
+        status_layout2.addWidget(self.listen_mode_label)
+        self.listen_mode_label.setStyleSheet("color: blue; font-weight: bold;")
+        status_layout2.addWidget(QLabel("运行状态:"))
+        status_layout2.addWidget(self.task_status_label)
+        self.task_status_label.setStyleSheet("color: orange; font-weight: bold;")
+
+        self.main_layout.addWidget(status_group2)
+
+        # 控制按钮
+        btn_layout = QHBoxLayout()
+        self.btn_start = QPushButton("▶ 启动")
+        self.btn_pause = QPushButton("⏸ 暂停")
+        self.btn_exit = QPushButton("❎ 退出")
+        self.btn_screenshot = QPushButton("📸 测试截图")
+
+        for btn in [self.btn_start, self.btn_pause, self.btn_exit, self.btn_screenshot]:
+            btn.setFixedWidth(90)
+            btn_layout.addWidget(btn)
+
+        btn_layout.setSpacing(15)
+        btn_layout.setAlignment(Qt.AlignCenter)
+        self.main_layout.addLayout(btn_layout)
+
+        # 日志输出框
+        self.log_output = QTextEdit()
+        self.log_output.setReadOnly(True)
+        self.log_output.setStyleSheet("background-color: #111; color: #0f0; font-family: Consolas;")
+        self.log_output.setFixedHeight(200)
+        self.main_layout.addWidget(self.log_output)
+        register_log_callback(self.thread_safe_log)
+
+        # 绑定按钮事件（外部定义）
+        self.btn_start.clicked.connect(start_tasks)
+        self.btn_pause.clicked.connect(stop_tasks)
+        self.btn_exit.clicked.connect(exit_app)
+        self.btn_screenshot.clicked.connect(test_screenshot)
+        # ✅ 主控界面按钮事件绑定
+        self.btn_manual_research.clicked.connect(manual_research)
+        self.btn_manual_expedition.clicked.connect(manual_expedition)
+        self.btn_manual_rift.clicked.connect(start_rift_manual)
+        self.btn_continue_rift.clicked.connect(continue_rift)
+        self.connection_status_signal.connect(self.update_connection_status)
+        self.listen_mode_signal.connect(self.update_listen_mode)
+        self.task_status_signal.connect(self.update_task_status)
+        self.log_signal.connect(self.append_log)  # 绑定信号槽
+        register_log_callback(self.log_signal.emit)  # ✅ 用 signal.emit 注册回调
+
+        # ✅ 设置分组标题样式（加粗 + 字号）
+        for group in [function_group, manual_group, resource_group, status_group2, left_box, right_box]:
+            group.setStyleSheet("QGroupBox { font-weight: bold; font-size: 12px; }")   
+
+    def update_connection_status(self, text, color="green"):
+        self.connection_status_label.setText(text)
+        self.connection_status_label.setStyleSheet(f"color: {color};")
+
+    def update_listen_mode(self, text, color="blue"):
+        print(f"✅ UI正在更新监听模式：{text}")
+        self.listen_mode_label.setText(text)
+        self.listen_mode_label.setStyleSheet(f"color: {color};")
+
+    def update_task_status(self, text, color="orange"):
+        self.task_status_label.setText(text)
+        self.task_status_label.setStyleSheet(f"color: {color};")
+
+    def update_rift_level(self, text):
+        self.rift_level_label.setText(text)
+
+    def update_research_status(self, text):
+        self.research_status_label.setText(f"研究剩余：{text}")
+
+    def update_accel_status(self, text):
+        self.accel_status_label.setText(f"加速CD：{text}")
+
+    def append_log(self, message):
+        self.log_output.append(message)
+        self.log_output.ensureCursorVisible()
+
+    def thread_safe_log(self, msg):
+        from PyQt5.QtCore import QTimer
+        QTimer.singleShot(0, lambda: self.append_log(msg))
+    
+        
+
+
+def update_runtime_flags_from_ui():
+    gs.current_collect_enabled = window.checkbox_collect.isChecked()
+
+    selected_resources = []
+    if window.checkbox_wood.isChecked(): selected_resources.append("木材")
+    if window.checkbox_food.isChecked(): selected_resources.append("食物")
+    if window.checkbox_stone.isChecked(): selected_resources.append("石头")
+    if window.checkbox_copper.isChecked(): selected_resources.append("铜矿")
+    if window.checkbox_iron.isChecked(): selected_resources.append("铁矿")
+    gs.current_collect_points = selected_resources.copy()
+
+    gs.rift_max_retry = int(window.rift_retry_input.text())
+
+def start_background_threads():
+    if 'window' not in globals():
+        print("❌ window 尚未定义，跳过启动监控线程")
+        return
+    threading.Thread(target=monitor_touch_connection, daemon=True).start()
+    threading.Thread(target=monitor_listen_mode, daemon=True).start()
 
 # 裂隙模块反馈层数
 def update_rift_level(level_text, failure_count):
     text = f"裂隙层数：{level_text} / {failure_count}"
-    rift_level_var.set(text)
+    window.update_rift_level(text)
     print(f"📌 当前识别层数为：{text}")
+    show_toast("📌 裂隙层数更新", f"当前识别层数为：{level_text} / 失败次数：{failure_count}")
 
 # 注册为全局回调
 gs.rift_level_callback = update_rift_level
@@ -110,50 +349,29 @@ gs.rift_level_callback = update_rift_level
 def safe_after(ms, func):
     try:
         if threading.current_thread() == threading.main_thread():
-            if root.winfo_exists() and root.tk.call('tk', 'windowingsystem') != '':
-                root.after(ms, func)
+            QTimer.singleShot(ms, func)
         else:
-            # 非主线程，改用 thread-safe 的 queue + after_idle 触发
-            import queue
-            if not hasattr(safe_after, "_q"):
-                safe_after._q = queue.Queue()
-
-                def _process_queue():
-                    try:
-                        while not safe_after._q.empty():
-                            f = safe_after._q.get_nowait()
-                            f()
-                    except Exception:
-                        pass
-                    finally:
-                        root.after(50, _process_queue)
-
-                root.after(50, _process_queue)
-
-            safe_after._q.put(lambda: func())
-
+            if hasattr(window, "_ui_queue"):
+                window._ui_queue.put(func)
+            else:
+                print("⚠️ window._ui_queue 不存在，无法排队执行 UI 更新")
     except RuntimeError as e:
-        try:
-            print(f"⚠️ safe_after 调用失败（可能主线程卡住/退出）: {e}")
-        except:
-            pass
+        print(f"⚠️ safe_after 调用失败: {e}")
 
 # 连接状态监控
 def monitor_touch_connection():
     while True:
         try:
             if server_socket.is_connected:
-                safe_after(0, lambda: connection_status_var.set("✅ 已连接 "))
+                window.connection_status_signal.emit("✅ 已连接 ", "green")
             else:
-                safe_after(0, lambda: connection_status_var.set("⏳ 尝试重连中..."))
+                window.connection_status_signal.emit("⏳ 尝试重连中...", "orange")
                 server_socket.connect()
                 if server_socket.is_connected:
-                    safe_after(0, lambda: connection_status_var.set("✅ 已重新连接 "))
+                    window.connection_status_signal.emit("✅ 已重新连接 ", "green")
         except Exception as e:
-            safe_after(0, lambda: connection_status_var.set(f"❌ 连接失败: {e}"))
+            window.connection_status_signal.emit(f"❌ 连接失败: {e}", "red")
         time.sleep(3)
-
-threading.Thread(target=monitor_touch_connection, daemon=True).start()
 
 def monitor_listen_mode():
     def query_and_update():
@@ -161,25 +379,16 @@ def monitor_listen_mode():
             resp = send_control_command("query_status\n")
             print(f"[ListenMode] 当前模式反馈: {resp}")
             if resp == "STATUS:VIDEO_STREAM_MODE":
-                safe_after(0, lambda: (
-                    listen_mode_var.set("🎬 视频流"),
-                    listen_mode_label.config(foreground="blue")
-                ))
+                safe_after(0, lambda: window.listen_mode_signal.emit("🎬 视频流", "blue"))
             elif resp == "STATUS:SCREENSHOT_MODE":
-                safe_after(0, lambda: (
-                    listen_mode_var.set("📸 截图"),
-                    listen_mode_label.config(foreground="green")
-                ))
+                safe_after(0, lambda: window.listen_mode_signal.emit("📸 截图", "green"))
             else:
-                safe_after(0, lambda: (
-                    listen_mode_var.set(f"❌ 未知 ({resp})"),
-                    listen_mode_label.config(foreground="red")
-                ))
+                safe_after(0, lambda: window.listen_mode_signal.emit(f"❌ 未知 ({resp})", "red"))
         except Exception as e:
             print(f"[ListenMode] 查询监听模式失败: {e}")
             safe_after(0, lambda: (
-                listen_mode_var.set("❌ 断开/异常"),
-                listen_mode_label.config(foreground="red")
+                window.listen_mode_signal.emit("❌ 断开/异常"),
+                window.listen_mode_label.setStyleSheet("color: red;")
             ))
 
     # 先主动请求一次
@@ -190,8 +399,6 @@ def monitor_listen_mode():
         query_and_update()
 
 
-# 启动监听模式轮询线程
-threading.Thread(target=monitor_listen_mode, daemon=True).start()
 
 # 日志区
 def log(msg):
@@ -205,12 +412,12 @@ def log(msg):
 register_log_callback(log)
 
 # 注册 tech_timer_direct_callback
-# 工具函数，保证在主线程里安全获取 collect_enabled.get()
+# 工具函数，保证在主线程里安全获取 window.checkbox_collect.isChecked()
 def is_collect_enabled():
     result = [False]
     event = threading.Event()
     def check():
-        result[0] = collect_enabled.get()
+        result[0] = window.checkbox_collect.isChecked()
         event.set()
     safe_after(0, check)
     event.wait(timeout=0.2)  # 最多等 200ms
@@ -229,11 +436,12 @@ def tech_timer_direct_callback(task_type):
 
     if gs.current_task_flag in [None, "collect"]:
         print(f"⚙️ 收到 timer_direct_callback → {task_type}，直接触发科技流程")
+        show_toast("⚙️ 科技流程触发", "正在执行科技流程")
         gs.research_pause_event.set()
         pause_all_tasks()
         time.sleep(0.3)
         gs.current_task_flag = "research"
-        safe_after(0, lambda: current_task_status_var.set("研究中 💡"))
+        safe_after(0, lambda: window.update_task_status("研究中 💡"))
 
         # ✅ 正常科技流程
         tech_research_core.research_ready_event.clear()
@@ -247,13 +455,13 @@ def tech_timer_direct_callback(task_type):
             pause_event.clear()
             gs.research_pause_event.clear()
             gs.current_task_flag = "collect"
-            safe_after(0, lambda: current_task_status_var.set("采集中 🏃‍♂️"))
+            safe_after(0, lambda: window.update_task_status("采集中 🏃‍♂️"))
             collect_core.start_collect(server_socket, gs.current_collect_points.copy())
         else:
             print("✅ 科技流程完成（未启用采集模块，不恢复采集）")
             gs.research_pause_event.clear()
             gs.current_task_flag = None
-            safe_after(0, lambda: current_task_status_var.set("空闲"))
+            safe_after(0, lambda: window.update_task_status("空闲"))
 
     elif gs.current_task_flag == "expedition":
         print(f"⚠️ 当前远征中，延迟 10 秒等待状态确认后触发科技流程")
@@ -265,7 +473,7 @@ def tech_timer_direct_callback(task_type):
                 time.sleep(0.3)
 
                 gs.current_task_flag = "research"
-                safe_after(0, lambda: current_task_status_var.set("研究中 💡"))
+                safe_after(0, lambda: window.update_task_status("研究中 💡"))
 
                 tech_research_core.research_ready_event.clear()
                 tech_research_core.initialize_research_state(server_socket)
@@ -276,13 +484,13 @@ def tech_timer_direct_callback(task_type):
                     print(f"✅ 科技流程完成，恢复采集（资源: {', '.join(gs.current_collect_points)}）")
                     pause_event.clear()
                     gs.current_task_flag = "collect"
-                    safe_after(0, lambda: current_task_status_var.set("采集中 🏃‍♂️"))
+                    safe_after(0, lambda: window.update_task_status("采集中 🏃‍♂️"))
                     collect_core.start_collect(server_socket, gs.current_collect_points.copy())
                 else:
                     print("✅ 科技流程完成（未启用采集模块，不恢复采集）")
                     pause_event.clear()
                     gs.current_task_flag = None
-                    safe_after(0, lambda: current_task_status_var.set("空闲"))
+                    safe_after(0, lambda: window.update_task_status("空闲"))
             else:
                 print(f"⚠️ 延迟后仍在 {gs.current_task_flag}，暂不处理科技流程")
 
@@ -296,14 +504,14 @@ gs.tech_timer_direct_callback = tech_timer_direct_callback
 # 测试截图
 def test_screenshot():
     # 更新当前状态
-    current_task_status_var.set("截图中 📸")
+    window.update_task_status("截图中 📸")
     print("📸 请求切换到截图模式...")
 
     # 切换截图模式
     resp = send_control_command("SWITCH_TO_SCREENSHOT\n")
     if resp != "ACK_SWITCH_TO_SCREENSHOT":
         print(f"❌ 切换截图模式失败，返回: {resp}")
-        current_task_status_var.set("空闲")
+        window.update_task_status("空闲")
         return
 
     # 确认切换成功
@@ -315,7 +523,7 @@ def test_screenshot():
         time.sleep(0.5)
     else:
         print("❌ 等待切换截图模式超时")
-        current_task_status_var.set("空闲")
+        window.update_task_status("空闲")
         return
 
     # 执行截图
@@ -326,20 +534,26 @@ def test_screenshot():
         with open("screenshot_from_socket.png", "wb") as f:
             f.write(img)
         print("✅ 截图保存完成 screenshot_from_socket.png")
+        show_toast("✅ 截图完成", "已保存为 screenshot_from_socket.png")
     else:
         print("❌ 无法获取截图")
 
     # 恢复状态
-    current_task_status_var.set("空闲")
+    window.update_task_status("空闲")
 
 
 # 裂隙模块启动 
 def start_rift_manual():
     rift_socket = get_rift_stream_listener()
-    current_task_status_var.set("裂隙中 ⚔️")
+    window.update_task_status("裂隙中 ⚔️")
     pause_event.clear()
     print("⚙️ 启动裂隙模块（由裂隙模块内部处理切换）")
-    threading.Thread(target=rift_core.start_rift_module, args=(rift_socket, server_socket), daemon=True).start()
+    show_toast("⚙️ 启动裂隙模块", "裂隙模块已启动，等待挑战")
+    try:
+        retry_count = int(window.rift_retry_input.text())
+    except:
+        retry_count = 30
+    threading.Thread(target=rift_core.start_rift_module, args=(rift_socket, server_socket, retry_count), daemon=True).start()
 
 # 裂隙模块退出后的回调
 def resume_after_rift_callback():
@@ -352,7 +566,7 @@ def resume_after_rift_callback():
         if resp == "STATUS:SCREENSHOT_MODE":
             print("✅ 当前是截图模式，恢复采集")
             pause_event.clear()
-            safe_after(0, lambda: current_task_status_var.set("采集中 🏃‍♂️"))
+            safe_after(0, lambda: window.update_task_status("采集中 🏃‍♂️"))
             gs.current_task_flag = "collect"
             collect_core.start_collect(server_socket, gs.current_collect_points.copy())
             return
@@ -364,6 +578,7 @@ def resume_after_rift_callback():
 
 # 自动脚本启动
 def start_tasks():
+    show_toast("▶️ 启动脚本", "正在启动所有模块...")
     pause_event.clear()
     gs.expedition_pause_event.clear()
     gs.current_task_flag = "running"
@@ -372,7 +587,8 @@ def start_tasks():
 # 手动科技研究
 def manual_research():
     print("🧪 手动触发科技研究")
-    safe_after(0, lambda: current_task_status_var.set("研究中 💡"))
+    show_toast("🧪 手动科技研究", "正在执行手动科技流程")
+    safe_after(0, lambda: window.update_task_status("研究中 💡"))
     pause_event.clear()
     tech_research_core.research_ready_event.clear()
     tech_research_core.initialize_research_state(server_socket)
@@ -395,40 +611,41 @@ threading.Thread(target=monitor_accelerate_ready_event, daemon=True).start()
 # 手动远征任务
 def manual_expedition():
     print("🛰️ 手动触发远征流程")
-    current_task_status_var.set("远征中 🚀")
+    show_toast("🛰️ 手动远征流程", "正在执行手动远征任务")
+    window.update_task_status("远征中 🚀")
     pause_event.clear()
-    set_expedition_flags(scout_enabled.get(), camp_reward_enabled.get())
+    set_expedition_flags(window.checkbox_scout.isChecked(), window.checkbox_mine_reward.isChecked())
     gs.expedition_pause_event.clear()
     expedition_core.manual_trigger_expedition(server_socket, pause_event, pause_all_tasks)
 
 # 裂隙模块继续挑战
 def continue_rift():
     print("▶️ 继续裂隙挑战执行")
-    current_task_status_var.set("裂隙中 ⚔️")
+    show_toast("▶️ 继续裂隙挑战", "正在继续裂隙挑战")
+    window.update_task_status("裂隙中 ⚔️")
     rift_core.resume_rift(server_socket)
 
 # 自动脚本线程
 def run_tasks_thread():
-    global selected_collect_points
 
     print("▶️ 脚本已启动...")
-    show_toast("▶️ 启动脚本", "所有系统已启动")
 
-    set_expedition_enabled(expedition_enabled.get())
-    set_expedition_flags(scout_enabled.get(), camp_reward_enabled.get())
+    set_expedition_enabled(window.checkbox_expedition.isChecked())
+    set_expedition_flags(window.checkbox_scout.isChecked(), window.checkbox_mine_reward.isChecked())
 
     # 记录当前采集勾选状态
-    gs.current_collect_enabled = collect_enabled.get()
+    gs.current_collect_enabled = window.checkbox_collect.isChecked()
     print(f"📢 当前启动时采集启用状态: {gs.current_collect_enabled}")
 
     # 科技模块
     if gs.current_collect_enabled:
         print("🧬 开始科技研究任务")
+        show_toast("🧬 科技研究任务", "正在执行科技研究流程")
         if pause_event.is_set():
             print("⏸️ 检测到暂停信号，中止自动流程")
-            current_task_status_var.set("空闲")
+            window.update_task_status("空闲")
             return
-        safe_after(0, lambda: current_task_status_var.set("研究中 💡"))
+        safe_after(0, lambda: window.update_task_status("研究中 💡"))
         tech_research_core.research_ready_event.clear()
         tech_research_core.initialize_research_state(server_socket)
         print("⏳ 等待科技处理...")
@@ -436,44 +653,50 @@ def run_tasks_thread():
         print("✅ 科技处理完成")
         gs.research_pause_event.clear()   # ✅ 先 clear
         gs.current_task_flag = "collect"
-        safe_after(0, lambda: current_task_status_var.set("采集中 🏃‍♂️"))
+        safe_after(0, lambda: window.update_task_status("采集中 🏃‍♂️"))
+        show_toast("✅ 科技研究完成", "已恢复采集任务")
         if pause_event.is_set():
             print("⏸️ 检测到暂停信号，中止自动流程")
-            current_task_status_var.set("空闲")
+            window.update_task_status("空闲")
             return
 
     # 采集模块
     if gs.current_collect_enabled:
         if pause_event.is_set():
             print("⏸️ 检测到暂停信号，中止自动流程")
-            current_task_status_var.set("空闲")
+            window.update_task_status("空闲")
             return
         pause_event.clear()
-        gs.current_collect_enabled = collect_enabled.get()
-        gs.current_collect_points = (
-            ["食物"] if global_resource_mode.get()
-            else [label for label, var in resource_vars.items() if var.get()]
-        )
+        gs.current_collect_enabled = window.checkbox_collect.isChecked()
+        selected_resources = []
+        if window.checkbox_wood.isChecked(): selected_resources.append("木材")
+        if window.checkbox_food.isChecked(): selected_resources.append("食物")
+        if window.checkbox_stone.isChecked(): selected_resources.append("石头")
+        if window.checkbox_copper.isChecked(): selected_resources.append("铜矿")
+        if window.checkbox_iron.isChecked(): selected_resources.append("铁矿")
+        gs.current_collect_points = selected_resources.copy()
         def resume_after_expedition():
             print("📢 收到远征完成通知，恢复采集")
+            show_toast("📢 收到远征完成通知", "正在恢复采集任务")
             pause_event.clear()
             gs.current_task_flag = "collect"
             collect_core.start_collect(server_socket, gs.current_collect_points.copy())
 
         expedition_core.register_main_callbacks(resume_after_expedition, pause_all_tasks)
-        safe_after(0, lambda: current_task_status_var.set("采集中 🏃‍♂️"))
+        safe_after(0, lambda: window.update_task_status("采集中 🏃‍♂️"))
 
         print(f"📦 启用采集: {', '.join(gs.current_collect_points)}") 
+        show_toast("📦 启用采集", f"已启用采集任务（资源: {', '.join(gs.current_collect_points)}）")
         gs.research_pause_event.clear()
         gs.current_task_flag = "collect"
         threading.Thread(target=collect_core.start_collect, args=(server_socket, gs.current_collect_points.copy()), daemon=True).start()
 
     # 远征模块
-    if expedition_enabled.get():
+    if window.checkbox_expedition.isChecked():
         print("✅ 远征模块已启用")
 
     # 裂隙模块
-    if rift_enabled.get():
+    if window.checkbox_rift.isChecked():
         enable_rift_listener()
         rift_socket = get_rift_stream_listener()
         print("⚔️ 启用裂隙闯关")
@@ -510,7 +733,7 @@ def stop_tasks():
     pause_all_tasks()
     gs.expedition_pause_event.set()
     gs.current_task_flag = None
-    current_task_status_var.set("空闲")
+    window.update_task_status("空闲")
     print("⏸️ 所有模块已暂停（裂隙模块已自动切回截图模式）")
     show_toast("⏸️ 暂停所有模块", "已停止所有任务")
 
@@ -520,147 +743,22 @@ def exit_app():
     print("❎ 脚本退出")
     show_toast("❎ 脚本退出", "感谢使用")
     server_socket.close()
-    root.quit()
-
-# 变量定义
-collect_enabled = tk.BooleanVar()
-expedition_enabled = tk.BooleanVar()
-rift_enabled = tk.BooleanVar()
-camp_reward_enabled = tk.BooleanVar()
-scout_enabled = tk.BooleanVar()
-global_resource_mode = tk.BooleanVar()
-resource_vars = {label: tk.BooleanVar() for label in COLLECT_POINTS if label in ["木材", "食物", "石头", "铜矿", "铁矿"]}
-
-# GUI 布局
-frame = ttk.LabelFrame(root, text="功能启用设置")
-frame.pack(fill="x", padx=10, pady=10)
-
-features = [
-    ("启用采集模块", collect_enabled),
-    ("启用远征模块", expedition_enabled),
-    ("启用领地矿区一键领取（需配合远征）", camp_reward_enabled),
-    ("启用侦察功能（需配合远征）", scout_enabled),
-    ("启用时空裂隙自动挑战", rift_enabled),
-]
-
-for i, (text, var) in enumerate(features):
-    ttk.Checkbutton(frame, text=text, variable=var).grid(row=i // 2, column=i % 2, sticky="w", padx=10, pady=2)
-
-# 手动控制功能
-manual_frame = ttk.LabelFrame(root, text="手动控制功能")
-manual_frame.pack(fill="x", padx=10, pady=(0, 10))
-
-ttk.Button(manual_frame, text="🔬 手动科技研究", command=lambda: threading.Thread(target=manual_research, daemon=True).start()).grid(row=0, column=0, padx=10, pady=5)
-ttk.Button(manual_frame, text="📦 手动远征任务", command=lambda: threading.Thread(target=manual_expedition, daemon=True).start()).grid(row=0, column=1, padx=10, pady=5)
-ttk.Button(manual_frame, text="⚔️ 手动裂隙挑战", command=lambda: threading.Thread(target=start_rift_manual, daemon=True).start()).grid(row=0, column=2, padx=10, pady=5)
-ttk.Button(manual_frame, text="▶️ 继续挑战", command=continue_rift).grid(row=0, column=3, padx=10, pady=5)
-
-# 采集资源选择
-resource_frame = ttk.LabelFrame(root, text="采集资源选择")
-resource_frame.pack(fill="x", padx=10, pady=5)
-
-resource_list = list(resource_vars.items())
-for i, (label, var) in enumerate(resource_list):
-    ttk.Checkbutton(resource_frame, text=label, variable=var).grid(row=0, column=i, padx=10, pady=2, sticky="w")
-
-ttk.Checkbutton(resource_frame, text="全资源区域点击（批量采集）", variable=global_resource_mode).grid(row=2, column=0, columnspan=3, padx=10, pady=(5, 0), sticky="w")
-
-# ▶️ 包装容器，放入两块模块
-status_container = ttk.Frame(root)
-status_container.pack(fill="x", padx=10, pady=5)
-
-# ✅ 科技研究状态区块（左）
-research_frame = ttk.LabelFrame(status_container, text="研究状态")
-research_frame.grid(row=0, column=0, sticky="w", padx=(0, 10))
-
-research_status_var = tk.StringVar(value="研究剩余：无")
-accel_status_var = tk.StringVar(value="加速CD：无")
-
-ttk.Label(research_frame, textvariable=research_status_var).grid(row=0, column=0, sticky="w", padx=10, pady=2)
-ttk.Label(research_frame, textvariable=accel_status_var).grid(row=1, column=0, sticky="w", padx=10, pady=2)
-
-# ✅ 裂隙状态区块（右）
-rift_frame = ttk.LabelFrame(status_container, text="裂隙状态")
-rift_frame.grid(row=0, column=1, sticky="e")
-
-rift_level_var = tk.StringVar(value="裂隙层数：无 / 0")
-ttk.Label(rift_frame, textvariable=rift_level_var, foreground="orange").grid(row=0, column=0, columnspan=2, sticky="w", padx=10, pady=2)
-
-# ✨ 裂隙失败次数输入框
-ttk.Label(rift_frame, text="失败重试次数：").grid(row=1, column=0, sticky="e", padx=(10, 5), pady=2)
-rift_retry_var = tk.StringVar(value="30")
-rift_retry_entry = ttk.Entry(rift_frame, textvariable=rift_retry_var, width=5)
-rift_retry_entry.grid(row=1, column=1, sticky="w", padx=(0, 10), pady=2)
-
-# ✅ 绑定修改事件，实时更新给 rift_core
-def update_rift_retry_limit(*args):
-    try:
-        val = int(rift_retry_var.get())
-        if val < 1:
-            val = 1
-        elif val > 99:
-            val = 99
-        rift_core.failure_retry_limit = val
-        print(f"[主控面板] 已更新裂隙失败重试次数为: {val}")
-    except ValueError:
-        pass  # 不处理非数字，保持原值不变
-
-rift_retry_var.trace_add("write", update_rift_retry_limit)
-
+    QApplication.quit()
 
 def update_status_labels():
     status = tech_timer_manager.get_timer_status()
-    research_status_var.set("研究剩余：" + status["研究剩余"])
-    accel_status_var.set("加速CD：" + status["加速CD"])
-    root.after(1000, update_status_labels)
-
-update_status_labels()
-
-# 主控界面更新任务状态
-def set_current_task_status(status_text):
-    current_task_status_var.set(status_text)
-
-# 注册回调到 global_state
-gs.current_task_status_callback = set_current_task_status
-
-# 软件状态显示   
-software_status_frame = ttk.LabelFrame(root, text="软件状态")
-software_status_frame.pack(fill="x", padx=10, pady=10)
-
-# 横向容器
-status_inner_frame = ttk.Frame(software_status_frame)
-status_inner_frame.pack(fill="x", padx=5, pady=5)
-
-# TouchServer 状态
-ttk.Label(status_inner_frame, text="TouchServer：").grid(row=0, column=0, sticky="w", padx=(5, 5))
-connection_status_label = ttk.Label(status_inner_frame, textvariable=connection_status_var, foreground="blue")
-connection_status_label.grid(row=0, column=1, sticky="w", padx=(0, 15))
-
-# 监听模式
-ttk.Label(status_inner_frame, text="监听模式：").grid(row=0, column=2, sticky="w", padx=(0, 5))
-listen_mode_label = ttk.Label(status_inner_frame, textvariable=listen_mode_var, foreground="green")
-listen_mode_label.grid(row=0, column=3, sticky="w", padx=(0, 15))
-
-# 当前运行模块状态
-ttk.Label(status_inner_frame, text="运行状态：").grid(row=0, column=4, sticky="w", padx=(0, 5))
-current_task_status_var = tk.StringVar(value="空闲")
-current_task_status_label = ttk.Label(status_inner_frame, textvariable=current_task_status_var, foreground="purple")
-current_task_status_label.grid(row=0, column=5, sticky="w")
-
-# 按钮框架
-btn_frame = ttk.Frame(root)
-btn_frame.pack(pady=10)
-for i, (text, cmd) in enumerate([
-    ("▶ 启动", start_tasks),
-    ("⏸ 暂停", stop_tasks),
-    ("❎ 退出", exit_app),
-    ("📸 测试截图", test_screenshot)
-]):
-    ttk.Button(btn_frame, text=text, command=cmd).grid(row=0, column=i, padx=10)
-
-log_text = tk.Text(root, height=15, state='disabled', bg="#111", fg="#0f0", insertbackground="#0f0")
-log_text.pack(fill="both", expand=True, padx=10, pady=(0, 10))
+    window.research_status_label.setText("研究剩余：" + status["研究剩余"])
+    window.accel_status_label.setText("加速CD：" + status["加速CD"])
+    QTimer.singleShot(1000, update_status_labels)
 
 # 启动主循环
 if __name__ == '__main__':
-    root.mainloop()
+    import sys
+    app = QApplication(sys.argv)
+    window = MainWindow()
+    update_status_labels()
+    update_runtime_flags_from_ui()
+    window.show()
+    start_background_threads()
+    sys.exit(app.exec_())
+

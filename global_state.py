@@ -35,3 +35,4 @@ click_frozen = threading.Event()
 rift_level_callback = None  # 主控注册的裂隙层数更新回调函数
 rift_state = "idle"  # 可取值：idle / opening  / wait_continue / battling
 rift_send_control_command_callback = None  # 主控注册的发送控制命令回调函数
+rift_max_retry = 30 # 裂隙最大重试次数
